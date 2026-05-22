@@ -123,32 +123,110 @@ public final class Sha256Vis {
     // Cell + colour derivation
     // =========================================================================
 
-    private static int[][] buildCells(int[] c, boolean flip) {
-        // 21 bits MSB-first, row-major into a 7×3 base grid.
-        // Bit i = (c[1] | c[2] | c[3]) bit (20-i) from a 21-bit big-endian stream.
-        int stream = (c[1] << 13) | (c[2] << 5) | (c[3] >>> 3);   // 21-bit
-        int[][] base = new int[7][3];
-        for (int idx = 0; idx < 21; idx++) {
-            int bit = (stream >>> (20 - idx)) & 1;
-            base[idx / 3][idx % 3] = bit;
+    /**
+     * Bit-index lookup for the point-mirror layout (20-bit stream → 7×5 grid).
+     *
+     * <pre>
+     *  0  1  2  3  4
+     *  5  6  7  8  9
+     * 10 11 12 13 17
+     * 14 15 16 15 14
+     * 17 18 12 11 10
+     * 19  8  7  6  5
+     *  4  3  2  1  0
+     * </pre>
+     *
+     * Cells that share the same index are 180° point-symmetric around [3][2].
+     * The four unpaired extras (9, 13, 18, 19) use the remaining bits.
+     */
+    private static final int[] POINT_MAP = {
+         0,  1,  2,  3,  4,
+         5,  6,  7,  8,  9,
+        10, 11, 12, 13, 17,
+        14, 15, 16, 15, 14,
+        17, 18, 12, 11, 10,
+        19,  8,  7,  6,  5,
+         4,  3,  2,  1,  0,
+    };
+
+    /**
+     * Build the 7×5 cell grid.
+     *
+     * <p>Normal path (axis mirror selected by SHA parity):<br>
+     * Even: vertical mirror — rows 4,5,6 = rows 2,1,0; center cell forced off.<br>
+     * Odd:  horizontal mirror — cols 3,4 = cols 1,0; center cell forced on.
+     *
+     * <p>Point-mirror override: if {@code swap=true} and the set-cell count
+     * after cell-inversion is below 10, the grid is rebuilt using
+     * {@link #POINT_MAP} (180° rotational symmetry around the center).
+     *
+     * <p>Cell inversion ({@code flip}) is always applied after mirroring.
+     */
+    private static int[][] buildCells(int[] c, boolean flip, boolean parityOdd, boolean swap) {
+        int stream = (c[1] << 12) | (c[2] << 4) | (c[3] >>> 4);   // 20-bit
+
+        int[][] grid = buildAxisGrid(stream, parityOdd);
+        if (flip) invertCells(grid);
+
+        // Count set bits in the raw 20-bit stream (before mirroring) to decide
+        // whether to switch to point mirror.
+        int rawSet = flip ? (20 - Integer.bitCount(stream & 0xFFFFF))
+                          :        Integer.bitCount(stream & 0xFFFFF);
+        if (swap && rawSet < 10) {
+            grid = buildPointGrid(stream);
+            if (flip) invertCells(grid);
         }
-        // Mirror around the centre column (col 2 is axis):
-        //   out cols: [0]=base[0], [1]=base[1], [2]=base[2], [3]=base[1], [4]=base[0]
-        int[][] out = new int[7][5];
-        for (int r = 0; r < 7; r++) {
-            out[r][0] = base[r][0];
-            out[r][1] = base[r][1];
-            out[r][2] = base[r][2];
-            out[r][3] = base[r][1];
-            out[r][4] = base[r][0];
-        }
-        // Flip bit: invert all cells (on ↔ off)
-        if (flip) {
-            for (int r = 0; r < 7; r++)
+        return grid;
+    }
+
+    private static int[][] buildAxisGrid(int stream, boolean parityOdd) {
+        int[][] grid = new int[7][5];
+        if (!parityOdd) {
+            // ── Even parity: vertical mirror (top↔bottom) ────────────────
+            int bit = 0;
+            for (int r = 0; r < 4; r++)
                 for (int col = 0; col < 5; col++)
-                    out[r][col] ^= 1;
+                    grid[r][col] = (stream >>> (19 - bit++)) & 1;
+            grid[3][2] = 0;
+            for (int col = 0; col < 5; col++) {
+                grid[4][col] = grid[2][col];
+                grid[5][col] = grid[1][col];
+                grid[6][col] = grid[0][col];
+            }
+        } else {
+            // ── Odd parity: horizontal mirror (left↔right) ───────────────
+            int bit = 0;
+            for (int col = 0; col < 3; col++)
+                for (int r = 0; r < 7; r++) {
+                    if (r == 3 && col == 2) continue;
+                    grid[r][col] = (stream >>> (19 - bit++)) & 1;
+                }
+            grid[3][2] = 1;
+            for (int r = 0; r < 7; r++) {
+                grid[r][3] = grid[r][1];
+                grid[r][4] = grid[r][0];
+            }
         }
-        return out;
+        return grid;
+    }
+
+    private static int[][] buildPointGrid(int stream) {
+        int[][] grid = new int[7][5];
+        for (int i = 0; i < 35; i++)
+            grid[i / 5][i % 5] = (stream >>> (19 - POINT_MAP[i])) & 1;
+        return grid;
+    }
+
+    private static void invertCells(int[][] grid) {
+        for (int r = 0; r < 7; r++)
+            for (int col = 0; col < 5; col++)
+                grid[r][col] ^= 1;
+    }
+
+    private static int countSet(int[][] grid) {
+        int n = 0;
+        for (int[] row : grid) for (int v : row) n += v;
+        return n;
     }
 
     /** @param swapLuminance when true, swap fg and bg luminance (driven by SHA-256 parity) */
@@ -158,7 +236,7 @@ public final class Sha256Vis {
         double hue       = hi4 * (360.0 / 16.0);
         double chromaOff = CHROMA_MIN + lo4 * ((CHROMA_MAX - CHROMA_MIN) / 15.0);
 
-        int    lumIdx = c[3] & 0x3;
+        int    lumIdx = (c[3] >>> 2) & 0x3;   // c[3] bits 3..2
         double baseL  = BASE_L_MIN + lumIdx * ((BASE_L_MAX - BASE_L_MIN) / 3.0);
 
         // Foreground / background luminance and chroma per style
@@ -268,11 +346,12 @@ public final class Sha256Vis {
     // =========================================================================
 
     public static VisSpec spec(String input, Style style) {
-        byte[] hb   = sha256(input);
-        int[]  c    = cBytes(hb);
-        boolean flip = ((c[3] >>> 2) & 1) == 1;    // bit 2 of c[3]: invert cells
-        boolean swap = shaParity(hb);               // SHA parity: swap fg/bg luminance
-        int[][] cells = buildCells(c, flip);
+        byte[] hb        = sha256(input);
+        int[]  c         = cBytes(hb);
+        boolean parityOdd = shaParity(hb);           // selects mirror axis
+        boolean flip      = ((c[3] >>> 1) & 1) == 1; // c[3] bit 1: invert cells
+        boolean swap      = (c[3] & 1) == 1;         // c[3] bit 0: swap fg/bg luminance
+        int[][] cells = buildCells(c, flip, parityOdd, swap);
         OklchColor[] cols = deriveColors(c, style, swap);
         String[] words = deriveWords(hb);
         return new VisSpec(cells, cols[0], cols[1], words, style);
@@ -287,11 +366,12 @@ public final class Sha256Vis {
     }
 
     public static PixelGrid pixels(String input, Style style) {
-        byte[] hb   = sha256(input);
-        int[]  c    = cBytes(hb);
-        boolean flip = ((c[3] >>> 2) & 1) == 1;
-        boolean swap = shaParity(hb);
-        int[][] cells = buildCells(c, flip);
+        byte[] hb        = sha256(input);
+        int[]  c         = cBytes(hb);
+        boolean parityOdd = shaParity(hb);
+        boolean flip      = ((c[3] >>> 1) & 1) == 1;
+        boolean swap      = (c[3] & 1) == 1;
+        int[][] cells = buildCells(c, flip, parityOdd, swap);
         OklchColor[] cols = deriveColors(c, style, swap);
         return new PixelGrid(14, 20, genPixels(cells), cols[0], cols[1], style);
     }

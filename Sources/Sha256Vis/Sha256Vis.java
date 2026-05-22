@@ -48,12 +48,12 @@ public final class Sha256Vis {
     // Tunable constants
     // =========================================================================
 
-    private static final double BASE_L_MIN  = 0.6;
-    private static final double BASE_L_MAX  = 0.8;
-    private static final double CHROMA_MIN  = 0.10;
-    private static final double CHROMA_MAX  = 0.30;
+    private static final double BASE_L_MIN  = 0.5;
+    private static final double BASE_L_MAX  = 0.7;
+    private static final double CHROMA_MIN  = 0.05;
+    private static final double CHROMA_MAX  = 0.25;
 
-    private static final double HC_L_ADD       = 0.20;   // HC foreground +L
+    private static final double HC_L_ADD       = 0.30;   // HC foreground +L
     private static final double BG_L_SPREAD    = 0.50;   // bg = fg − 0.5
     private static final double BG_L_EXTRA_HC  = 0.30;   // additional bg − 0.3 in HC/mono
     private static final double CHROMA_STD_ADD = 0.00;
@@ -123,7 +123,7 @@ public final class Sha256Vis {
     // Cell + colour derivation
     // =========================================================================
 
-    private static int[][] buildCells(int[] c) {
+    private static int[][] buildCells(int[] c, boolean flip) {
         // 21 bits MSB-first, row-major into a 7×3 base grid.
         // Bit i = (c[1] | c[2] | c[3]) bit (20-i) from a 21-bit big-endian stream.
         int stream = (c[1] << 13) | (c[2] << 5) | (c[3] >>> 3);   // 21-bit
@@ -142,18 +142,24 @@ public final class Sha256Vis {
             out[r][3] = base[r][1];
             out[r][4] = base[r][0];
         }
+        // Flip bit: invert all cells (on ↔ off)
+        if (flip) {
+            for (int r = 0; r < 7; r++)
+                for (int col = 0; col < 5; col++)
+                    out[r][col] ^= 1;
+        }
         return out;
     }
 
-    private static OklchColor[] deriveColors(int[] c, Style style) {
+    /** @param swapLuminance when true, swap fg and bg luminance (driven by SHA-256 parity) */
+    private static OklchColor[] deriveColors(int[] c, Style style, boolean swapLuminance) {
         int hi4 = (c[0] >>> 4) & 0xF;
         int lo4 = c[0] & 0xF;
         double hue       = hi4 * (360.0 / 16.0);
         double chromaOff = CHROMA_MIN + lo4 * ((CHROMA_MAX - CHROMA_MIN) / 15.0);
 
-        boolean flip   = ((c[3] >>> 2) & 1) == 1;
-        int     lumIdx = c[3] & 0x3;
-        double  baseL  = BASE_L_MIN + lumIdx * ((BASE_L_MAX - BASE_L_MIN) / 3.0);
+        int    lumIdx = c[3] & 0x3;
+        double baseL  = BASE_L_MIN + lumIdx * ((BASE_L_MAX - BASE_L_MIN) / 3.0);
 
         // Foreground / background luminance and chroma per style
         double fgL, bgL, fgC, bgC;
@@ -183,7 +189,8 @@ public final class Sha256Vis {
         fgL = clamp01(fgL);
         bgL = clamp01(bgL);
 
-        if (flip) {
+        // SHA-256 parity swaps fg/bg luminance
+        if (swapLuminance) {
             double t = fgL; fgL = bgL; bgL = t;
         }
 
@@ -249,15 +256,24 @@ public final class Sha256Vis {
         }
     }
 
+    /** XOR-parity of all 32 SHA-256 bytes: true when the total number of set bits is odd. */
+    private static boolean shaParity(byte[] hb) {
+        int p = 0;
+        for (byte b : hb) p ^= Integer.bitCount(b & 0xFF);
+        return (p & 1) == 1;
+    }
+
     // =========================================================================
     // Public API
     // =========================================================================
 
     public static VisSpec spec(String input, Style style) {
-        byte[] hb = sha256(input);
-        int[]  c  = cBytes(hb);
-        int[][] cells = buildCells(c);
-        OklchColor[] cols = deriveColors(c, style);
+        byte[] hb   = sha256(input);
+        int[]  c    = cBytes(hb);
+        boolean flip = ((c[3] >>> 2) & 1) == 1;    // bit 2 of c[3]: invert cells
+        boolean swap = shaParity(hb);               // SHA parity: swap fg/bg luminance
+        int[][] cells = buildCells(c, flip);
+        OklchColor[] cols = deriveColors(c, style, swap);
         String[] words = deriveWords(hb);
         return new VisSpec(cells, cols[0], cols[1], words, style);
     }
@@ -271,10 +287,12 @@ public final class Sha256Vis {
     }
 
     public static PixelGrid pixels(String input, Style style) {
-        byte[] hb = sha256(input);
-        int[]  c  = cBytes(hb);
-        int[][] cells = buildCells(c);
-        OklchColor[] cols = deriveColors(c, style);
+        byte[] hb   = sha256(input);
+        int[]  c    = cBytes(hb);
+        boolean flip = ((c[3] >>> 2) & 1) == 1;
+        boolean swap = shaParity(hb);
+        int[][] cells = buildCells(c, flip);
+        OklchColor[] cols = deriveColors(c, style, swap);
         return new PixelGrid(14, 20, genPixels(cells), cols[0], cols[1], style);
     }
 }

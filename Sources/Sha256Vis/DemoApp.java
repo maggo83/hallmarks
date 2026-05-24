@@ -24,6 +24,7 @@ public class DemoApp {
     private static final Color BORDER_FG = new Color(0xD1, 0xD1, 0xD6);
 
     private static JLabel wordsLabel;
+    private static Sha256Vis.CByteMode cByteMode = Sha256Vis.CByteMode.CRC8_COLUMNS;
     private static final List<VisView>   allViews   = new ArrayList<>();
     private static final List<PixelView> pixelViews = new ArrayList<>();
 
@@ -83,6 +84,23 @@ public class DemoApp {
         wordsLabel.setForeground(MUTED_FG);
         wordsLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
         inputCard.add(wordsLabel);
+        inputCard.add(vgap(10));
+
+        // C-byte mode toggle
+        JToggleButton modeBtn = new JToggleButton("C-bytes: CRC-8 columns");
+        modeBtn.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 12));
+        modeBtn.setAlignmentX(Component.LEFT_ALIGNMENT);
+        modeBtn.setFocusPainted(false);
+        modeBtn.addActionListener(e -> {
+            cByteMode = modeBtn.isSelected()
+                ? Sha256Vis.CByteMode.CRC32
+                : Sha256Vis.CByteMode.CRC8_COLUMNS;
+            modeBtn.setText(modeBtn.isSelected()
+                ? "C-bytes: CRC-32 (single pass)"
+                : "C-bytes: CRC-8 columns");
+            updateAll(field.getText());
+        });
+        inputCard.add(modeBtn);
 
         content.add(inputCard);
         content.add(vgap(20));
@@ -174,8 +192,8 @@ public class DemoApp {
     private static void updateAll(String input) {
         String[] w = Sha256Vis.words(input);
         wordsLabel.setText(w[0] + "  \u00b7  " + w[1] + "  \u00b7  " + w[2]);
-        allViews.forEach(v -> v.setInput(input));
-        pixelViews.forEach(v -> v.setInput(input));
+        allViews.forEach(v -> v.setInput(input, cByteMode));
+        pixelViews.forEach(v -> v.setInput(input, cByteMode));
     }
 
     // =========================================================================
@@ -195,8 +213,8 @@ public class DemoApp {
             setMaximumSize(d);
         }
 
-        void setInput(String input) {
-            spec = Sha256Vis.spec(input, style);
+        void setInput(String input, Sha256Vis.CByteMode mode) {
+            spec = Sha256Vis.spec(input, style, mode);
             repaint();
         }
 
@@ -227,8 +245,8 @@ public class DemoApp {
             setMaximumSize(d);
         }
 
-        void setInput(String input) {
-            grid = Sha256Vis.pixels(input, style);
+        void setInput(String input, Sha256Vis.CByteMode mode) {
+            grid = Sha256Vis.pixels(input, style, mode);
             repaint();
         }
 

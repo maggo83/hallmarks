@@ -26,6 +26,19 @@ public final class Sha256Vis {
 
     public enum Style { STANDARD, HIGH_CONTRAST, MONOCHROME }
 
+    /**
+     * Selects how the four c-bytes are derived from the 32-byte SHA-256 output.
+     *
+     * <ul>
+     *   <li>{@link #CRC8_COLUMNS} — four independent CRC-8/SMBUS passes, each
+     *       over one interleaved column of the hash (bytes 0,4,8,…28 for c[0],
+     *       bytes 1,5,9,…29 for c[1], etc.).</li>
+     *   <li>{@link #CRC32} — a single CRC-32/ISO-HDLC pass over all 32 hash
+     *       bytes; the four result bytes become c[0]…c[3] big-endian.</li>
+     * </ul>
+     */
+    public enum CByteMode { CRC8_COLUMNS, CRC32 }
+
     public record OklchColor(double L, double C, double h, String hex) {}
 
     /** 7×5 on/off grid plus the two paint colours and verbal companion words. */
@@ -75,8 +88,8 @@ public final class Sha256Vis {
         return crc;
     }
 
-    /** Compute the four c-bytes from a 32-byte hash. */
-    private static int[] cBytes(byte[] hb) {
+    /** Four c-bytes via CRC-8/SMBUS on interleaved column slices. */
+    private static int[] cBytesCrc8(byte[] hb) {
         int[] c = new int[4];
         byte[] buf = new byte[8];
         for (int i = 0; i < 4; i++) {
@@ -84,6 +97,36 @@ public final class Sha256Vis {
             c[i] = crc8(buf);
         }
         return c;
+    }
+
+    // =========================================================================
+    // CRC-32/ISO-HDLC (poly 0xEDB88320, init 0xFFFFFFFF, reflect in+out, xorout 0xFFFFFFFF)
+    // =========================================================================
+
+    private static int crc32(byte[] data) {
+        int crc = 0xFFFFFFFF;
+        for (byte b : data) {
+            crc ^= (b & 0xFF);
+            for (int i = 0; i < 8; i++)
+                crc = ((crc & 1) != 0) ? (crc >>> 1) ^ 0xEDB88320
+                                       :  crc >>> 1;
+        }
+        return crc ^ 0xFFFFFFFF;
+    }
+
+    /** Four c-bytes from a single CRC-32/ISO-HDLC over all 32 hash bytes (big-endian split). */
+    private static int[] cBytesCrc32(byte[] hb) {
+        int r = crc32(hb);
+        return new int[]{
+            (r >>> 24) & 0xFF,
+            (r >>> 16) & 0xFF,
+            (r >>>  8) & 0xFF,
+             r         & 0xFF,
+        };
+    }
+
+    private static int[] cBytes(byte[] hb, CByteMode mode) {
+        return mode == CByteMode.CRC32 ? cBytesCrc32(hb) : cBytesCrc8(hb);
     }
 
     // =========================================================================
@@ -345,34 +388,42 @@ public final class Sha256Vis {
     // Public API
     // =========================================================================
 
-    public static VisSpec spec(String input, Style style) {
+    public static VisSpec spec(String input, Style style, CByteMode mode) {
         byte[] hb        = sha256(input);
-        int[]  c         = cBytes(hb);
-        boolean parityOdd = shaParity(hb);           // selects mirror axis
-        boolean flip      = ((c[3] >>> 1) & 1) == 1; // c[3] bit 1: invert cells
-        boolean swap      = (c[3] & 1) == 1;         // c[3] bit 0: swap fg/bg luminance
+        int[]  c         = cBytes(hb, mode);
+        boolean parityOdd = shaParity(hb);
+        boolean flip      = ((c[3] >>> 1) & 1) == 1;
+        boolean swap      = (c[3] & 1) == 1;
         int[][] cells = buildCells(c, flip, parityOdd, swap);
         OklchColor[] cols = deriveColors(c, style, swap);
         String[] words = deriveWords(hb);
         return new VisSpec(cells, cols[0], cols[1], words, style);
     }
 
+    public static VisSpec spec(String input, Style style) {
+        return spec(input, style, CByteMode.CRC8_COLUMNS);
+    }
+
     public static VisSpec spec(String input) {
-        return spec(input, Style.STANDARD);
+        return spec(input, Style.STANDARD, CByteMode.CRC8_COLUMNS);
     }
 
     public static String[] words(String input) {
         return deriveWords(sha256(input));
     }
 
-    public static PixelGrid pixels(String input, Style style) {
+    public static PixelGrid pixels(String input, Style style, CByteMode mode) {
         byte[] hb        = sha256(input);
-        int[]  c         = cBytes(hb);
+        int[]  c         = cBytes(hb, mode);
         boolean parityOdd = shaParity(hb);
         boolean flip      = ((c[3] >>> 1) & 1) == 1;
         boolean swap      = (c[3] & 1) == 1;
         int[][] cells = buildCells(c, flip, parityOdd, swap);
         OklchColor[] cols = deriveColors(c, style, swap);
         return new PixelGrid(14, 20, genPixels(cells), cols[0], cols[1], style);
+    }
+
+    public static PixelGrid pixels(String input, Style style) {
+        return pixels(input, style, CByteMode.CRC8_COLUMNS);
     }
 }
